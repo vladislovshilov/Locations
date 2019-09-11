@@ -9,15 +9,20 @@
 import UIKit
 import CoreLocation
 import MapKit
+import UserNotifications
 
 class ViewController: UIViewController {
     @IBOutlet weak var mapView: MKMapView!
     
-    let locationManager = CLLocationManager()
+    var locationManager: CLLocationManager!
+    let center = UNUserNotificationCenter.current()
+    
+    var lastLocation: CLLocation?
     
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        locationManager.delegate = self
+        locationManager = LocationService.shared.locationManager
+        LocationService.shared.delegate = self
         locationManager.allowsBackgroundLocationUpdates = true
         locationManager.pausesLocationUpdatesAutomatically = false
         locationManager.activityType = .fitness
@@ -30,27 +35,17 @@ class ViewController: UIViewController {
             }
         }
         
+        PersistanceService.shared.loadLocations()?.forEach({ location in
+            addPin(on: .init(latitude: location.latitude, longitude: location.longitude), identifier: location.tag ?? "" + " \(location.time)")
+        })
+        
         if CLLocationManager.authorizationStatus() != .authorizedAlways {
             locationManager.requestAlwaysAuthorization()
         }
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in }
     }
     
-    func monitorRegionAtLocation(center: CLLocationCoordinate2D, identifier: String ) {
-        // Make sure the app is authorized.
-        if CLLocationManager.authorizationStatus() == .authorizedAlways {
-            // Make sure region monitoring is supported.
-            if CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) {
-                // Register the region.
-                let maxDistance = min(5.0, locationManager.maximumRegionMonitoringDistance)
-                let region = CLCircularRegion(center: center,
-                                              radius: maxDistance, identifier: identifier)
-                region.notifyOnEntry = true
-                region.notifyOnExit = true
-                
-                locationManager.startMonitoring(for: region)
-            }
-        }
-    }
+    
     
     func addRegionOverlay(with name: String, center: CLLocationCoordinate2D, radius: Double) {
         mapView.addOverlay(Region(filename: name, center: center, radius: radius))
@@ -63,10 +58,26 @@ class ViewController: UIViewController {
         mapView.addAnnotation(annotation)
     }
     
+    func showNotification(from location: CLLocation) {
+        // 1
+        let content = UNMutableNotificationContent()
+        content.title = "New Location Update 📌"
+        content.body = location.description
+        content.sound = .default
+        
+        // 2
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(identifier: "\(location.timestamp)", content: content, trigger: trigger)
+        
+        // 3
+        center.add(request, withCompletionHandler: nil)
+    }
+    
     @IBAction func buttonDidPress(_ sender: Any) {
-        guard let coordinates = mapView.userLocation.location?.coordinate else { return }
-        let numberOfRegions = locationManager.monitoredRegions.count
-        monitorRegionAtLocation(center: coordinates, identifier: "region_\(numberOfRegions)")
+        LocationService.shared.startReceivingSignificantLocationChanges()
+//        guard let coordinates = mapView.userLocation.location?.coordinate else { return }
+//        let numberOfRegions = locationManager.monitoredRegions.count
+//        monitorRegionAtLocation(center: coordinates, identifier: "region_\(numberOfRegions)")
     }
 }
 
@@ -98,12 +109,27 @@ extension ViewController: MKMapViewDelegate {
     }
 }
 
-extension ViewController: CLLocationManagerDelegate {
+extension ViewController: LocationServiceDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         print(locations.last!)
         mapView.setCenter(mapView.userLocation.coordinate, animated: true)
+        addPin(on: locations.last!.coordinate, identifier: "\(locations.last!.distance(from: lastLocation ?? locations.last!)) meters")
+        lastLocation = locations.last
+        showNotification(from: locations.last!)
+        PersistanceService.shared.insertLocation(locations.last!, tag: "online")
     }
-    
+}
+
+extension ViewController: CLLocationManagerDelegate {
+//    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+//        print(locations.last!)
+//        mapView.setCenter(mapView.userLocation.coordinate, animated: true)
+//        addPin(on: locations.last!.coordinate, identifier: "\(locations.last!.distance(from: lastLocation ?? locations.last!)) meters")
+//        lastLocation = locations.last
+//        showNotification(from: locations.last!)
+//        PersistanceService.shared.insertLocation(locations.last!, tag: "online")
+//    }
+//    
     func locationManager(_ manager: CLLocationManager, didStartMonitoringFor region: CLRegion) {
         print("didStartMonitoring \(region)")
         if let region = region as? CLCircularRegion {
